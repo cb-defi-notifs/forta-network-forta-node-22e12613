@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/forta-network/forta-core-go/clients/webhook/client/models"
+	"github.com/forta-network/forta-core-go/domain"
 	"github.com/forta-network/forta-core-go/security"
-	"github.com/forta-network/forta-node/services/components/metrics"
 	"github.com/forta-network/forta-node/tests/e2e"
 	"github.com/forta-network/forta-node/tests/e2e/agents/combinerbot/combinerbotalertid"
 	"github.com/forta-network/forta-node/tests/e2e/agents/txdetectoragent/testbotalertid"
@@ -276,15 +276,18 @@ func (s *Suite) runLocalModeAlertHandler(webhookURL, logFileName string, readAle
 	var healthCheckMetric *models.BotMetricSummary
 	for _, metric := range webhookAlerts.Metrics {
 		for _, summary := range metric.Metrics {
-			if summary.Name == metrics.MetricHealthCheckSuccess {
+			if strings.Contains(summary.Name, "agent.health") {
+				s.T().Logf("contains metric: %s", summary.Name)
+			}
+			if summary.Name == domain.MetricHealthCheckSuccess {
 				healthCheckMetric = summary
 				break
 			}
 		}
 	}
 
-	s.r.NotNil(healthCheckMetric)
 	s.r.NotNil(combinationAlert)
+	s.r.NotNil(healthCheckMetric)
 
 	s.T().Log(string(b))
 }

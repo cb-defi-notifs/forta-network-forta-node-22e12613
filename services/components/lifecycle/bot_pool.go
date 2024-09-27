@@ -91,7 +91,7 @@ func (bp *botPool) UpdateBotsWithLatestConfigs(latestConfigs messaging.AgentPayl
 	// add new bots
 	var latestBotClients []botio.BotClient
 	for _, botConfig := range latestConfigs {
-		logger := botLogger(botConfig)
+		logger := botLog(botConfig)
 		botClient, ok := bp.getBotClient(botConfig.ContainerName())
 		if ok && !botClient.IsClosed() {
 			logger.Debug("bot client already exists - skipping update")
@@ -112,7 +112,7 @@ func (bp *botPool) UpdateBotsWithLatestConfigs(latestConfigs messaging.AgentPayl
 	// updated the config of the bots that have different config
 	updatedBotConfigs := FindUpdatedBots(bp.getConfigsUnsafe(), latestConfigs)
 	for _, updatedBotConfig := range updatedBotConfigs {
-		logger := botLogger(updatedBotConfig)
+		logger := botLog(updatedBotConfig)
 		botClient, ok := bp.getBotClient(updatedBotConfig.ContainerName())
 		if !ok {
 			logger.Info("could not find the updated bot! skipping")
@@ -127,6 +127,7 @@ func (bp *botPool) UpdateBotsWithLatestConfigs(latestConfigs messaging.AgentPayl
 	// if the pool needs to wait for the first time, detect that and mark done
 	if bp.waitBots > 0 && bp.botWg != nil {
 		bp.botWg.Add(-len(latestConfigs))
+		bp.botWg = nil
 	}
 
 	return nil
@@ -152,7 +153,7 @@ func (bp *botPool) RemoveBotsWithConfigs(removedBotConfigs messaging.AgentPayloa
 
 	// close and discard the removed bots
 	for _, removedBotConfig := range removedBotConfigs {
-		logger := botLogger(removedBotConfig)
+		logger := botLog(removedBotConfig)
 		botClient, ok := bp.getBotClient(removedBotConfig.ContainerName())
 		if !ok {
 			logger.Info("could not find the removed bot! skipping")
@@ -212,7 +213,7 @@ func (bp *botPool) WaitForAll() {
 	bp.botWg.Wait()
 }
 
-func botLogger(botConfig config.AgentConfig) *log.Entry {
+func botLog(botConfig config.AgentConfig) *log.Entry {
 	return log.WithField("bot", botConfig.ID).WithField("container", botConfig.ContainerName())
 }
 

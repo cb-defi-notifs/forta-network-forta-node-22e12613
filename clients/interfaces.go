@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/forta-network/forta-core-go/domain"
-
 	"github.com/docker/docker/api/types"
-	"github.com/golang/protobuf/proto"
-
+	"github.com/docker/docker/api/types/events"
+	"github.com/forta-network/forta-core-go/domain"
+	"github.com/forta-network/forta-core-go/protocol"
 	"github.com/forta-network/forta-node/clients/docker"
 	"github.com/forta-network/forta-node/config"
+	"github.com/golang/protobuf/proto"
 )
 
 // DockerClient is a client interface for interacting with docker
@@ -33,6 +33,7 @@ type DockerClient interface {
 	StopContainer(ctx context.Context, id string) error
 	InterruptContainer(ctx context.Context, id string) error
 	TerminateContainer(ctx context.Context, id string) error
+	ShutdownContainer(ctx context.Context, id string, timeout *time.Duration) error
 	RemoveContainer(ctx context.Context, containerID string) error
 	WaitContainerExit(ctx context.Context, id string) error
 	WaitContainerStart(ctx context.Context, id string) error
@@ -42,9 +43,12 @@ type DockerClient interface {
 	HasLocalImage(ctx context.Context, ref string) (bool, error)
 	EnsureLocalImage(ctx context.Context, name, ref string) error
 	EnsureLocalImages(ctx context.Context, timeoutPerPull time.Duration, imagePulls []docker.ImagePull) []error
-	GetContainerLogs(ctx context.Context, containerID, tail string, truncate int) (string, error)
+	ListDigestReferences(ctx context.Context) ([]string, error)
+	GetContainerLogs(ctx context.Context, containerID, since string, truncate int) (string, error)
 	GetContainerFromRemoteAddr(ctx context.Context, hostPort string) (*types.Container, error)
 	SetImagePullCooldown(threshold int, cooldownDuration time.Duration)
+	Events(ctx context.Context, since time.Time) (<-chan events.Message, <-chan error)
+	ContainerStats(ctx context.Context, containerID string) (*docker.ContainerResources, error)
 }
 
 // MessageClient receives and publishes messages.
@@ -56,7 +60,7 @@ type MessageClient interface {
 
 // AlertAPIClient calls an http api on the analyzer to store alerts
 type AlertAPIClient interface {
-	PostBatch(batch *domain.AlertBatchRequest, token string) (*domain.AlertBatchResponse, error)
+	PostBatch(batch *domain.AlertBatchRequest, token string) error
 }
 
 type IPAuthenticator interface {
@@ -64,4 +68,8 @@ type IPAuthenticator interface {
 	FindAgentFromRemoteAddr(hostPort string) (*config.AgentConfig, error)
 	FindContainerNameFromRemoteAddr(ctx context.Context, hostPort string) (string, error)
 	FindAgentByContainerName(containerName string) (*config.AgentConfig, error)
+}
+
+type BlocksDataClient interface {
+	GetBlocksData(bucket int64) (*protocol.BlocksData, error)
 }

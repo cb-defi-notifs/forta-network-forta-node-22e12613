@@ -6,10 +6,15 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/errdefs"
+	"github.com/forta-network/forta-core-go/domain"
+	"github.com/forta-network/forta-core-go/protocol"
 	"github.com/forta-network/forta-node/clients/docker"
+	"github.com/forta-network/forta-node/clients/messaging"
 	mock_clients "github.com/forta-network/forta-node/clients/mocks"
 	"github.com/forta-network/forta-node/config"
 	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -30,6 +35,7 @@ type BotClientTestSuite struct {
 
 	client         *mock_clients.MockDockerClient
 	botImageClient *mock_clients.MockDockerClient
+	msgClient      *mock_clients.MockMessageClient
 
 	botClient *botClient
 
@@ -46,10 +52,11 @@ func (s *BotClientTestSuite) SetupTest() {
 	ctrl := gomock.NewController(s.T())
 	s.client = mock_clients.NewMockDockerClient(ctrl)
 	s.botImageClient = mock_clients.NewMockDockerClient(ctrl)
+	s.msgClient = mock_clients.NewMockMessageClient(ctrl)
 
 	s.botImageClient.EXPECT().SetImagePullCooldown(ImagePullCooldownThreshold, ImagePullCooldownDuration)
 
-	s.botClient = NewBotClient(config.LogConfig{}, config.ResourcesConfig{}, s.client, s.botImageClient)
+	s.botClient = NewBotClient(config.LogConfig{}, config.ResourcesConfig{}, "", s.client, s.botImageClient, s.msgClient)
 }
 
 func (s *BotClientTestSuite) TestEnsureBotImages() {
@@ -97,7 +104,53 @@ func (s *BotClientTestSuite) TestLaunchBot_Exists() {
 		s.client.EXPECT().AttachNetwork(gomock.Any(), testContainerID, testBotNetworkID).Return(nil)
 	}
 
+	resources := &docker.ContainerResources{
+		CPUStats: docker.CPUStats{
+			CPUUsage: docker.CPUUsage{
+				TotalUsage: 33,
+			},
+		},
+		MemoryStats: docker.MemoryStats{
+			Usage: 100,
+		},
+		NetworkStats: map[string]docker.NetworkStats{
+			"eth0": {
+				RxBytes: 123,
+				TxBytes: 456,
+			},
+		},
+	}
+	executed := make(chan bool)
+	s.client.EXPECT().ContainerStats(gomock.Any(), botConfig.ContainerName()).Return(resources, nil).Times(1)
+	s.msgClient.EXPECT().PublishProto(messaging.SubjectMetricAgent, gomock.Any()).Do(func(v1, v2 interface{}) {
+		metrics := v2.(*protocol.AgentMetricList)
+		assert.Len(s.T(), metrics.Metrics, 4)
+
+		// CPU metric
+		assert.Equal(s.T(), botConfig.ID, metrics.Metrics[0].AgentId)
+		assert.Equal(s.T(), domain.MetricDockerResourcesCPU, metrics.Metrics[0].Name)
+		assert.Equal(s.T(), float64(0), metrics.Metrics[0].Value)
+
+		// Memory metric
+		assert.Equal(s.T(), botConfig.ID, metrics.Metrics[1].AgentId)
+		assert.Equal(s.T(), domain.MetricDockerResourcesMemory, metrics.Metrics[1].Name)
+		assert.Equal(s.T(), float64(100), metrics.Metrics[1].Value)
+
+		// Network bytes received metric
+		assert.Equal(s.T(), botConfig.ID, metrics.Metrics[3].AgentId)
+		assert.Equal(s.T(), domain.MetricDockerResourcesNetworkReceive, metrics.Metrics[3].Name)
+		assert.Equal(s.T(), float64(123), metrics.Metrics[3].Value)
+
+		// Network bytes sent metric
+		assert.Equal(s.T(), botConfig.ID, metrics.Metrics[2].AgentId)
+		assert.Equal(s.T(), domain.MetricDockerResourcesNetworkSent, metrics.Metrics[2].Name)
+		assert.Equal(s.T(), float64(456), metrics.Metrics[2].Value)
+
+		close(executed)
+	})
+
 	s.r.NoError(s.botClient.LaunchBot(context.Background(), botConfig))
+	<-executed
 }
 
 func (s *BotClientTestSuite) TestLaunchBot_GetContainerError() {
@@ -121,7 +174,7 @@ func (s *BotClientTestSuite) TestLaunchBot_DoesNotExist() {
 
 	s.client.EXPECT().EnsurePublicNetwork(gomock.Any(), botConfig.ContainerName()).Return(testBotNetworkID, nil)
 	s.client.EXPECT().GetContainerByName(gomock.Any(), botConfig.ContainerName()).Return(nil, docker.ErrContainerNotFound)
-	botContainerCfg := NewBotContainerConfig(testBotNetworkID, botConfig, config.LogConfig{}, config.ResourcesConfig{})
+	botContainerCfg := NewBotContainerConfig(testBotNetworkID, botConfig, config.LogConfig{}, config.ResourcesConfig{}, "")
 	s.client.EXPECT().StartContainer(gomock.Any(), botContainerCfg).Return(nil, nil)
 	for _, serviceContainerName := range getServiceContainerNames() {
 		s.client.EXPECT().GetContainerByName(gomock.Any(), serviceContainerName).Return(&types.Container{
@@ -129,6 +182,8 @@ func (s *BotClientTestSuite) TestLaunchBot_DoesNotExist() {
 		}, nil)
 		s.client.EXPECT().AttachNetwork(gomock.Any(), testContainerID, testBotNetworkID).Return(nil)
 	}
+
+	s.client.EXPECT().ContainerStats(gomock.Any(), botConfig.ContainerName()).Return(nil, errdefs.NotFound(errors.New(""))).MaxTimes(1)
 
 	s.r.NoError(s.botClient.LaunchBot(context.Background(), botConfig))
 }
@@ -150,11 +205,12 @@ func (s *BotClientTestSuite) TestTearDownBot() {
 		}, nil)
 		s.client.EXPECT().DetachNetwork(gomock.Any(), testContainerID, botConfig.ContainerName()).Return(testErr)
 	}
+	timeout := BotShutdownTimeout
+	s.client.EXPECT().ShutdownContainer(gomock.Any(), testContainerID2, &timeout).Return(testErr)
 	s.client.EXPECT().RemoveContainer(gomock.Any(), testContainerID2).Return(testErr)
 	s.client.EXPECT().RemoveNetworkByName(gomock.Any(), botConfig.ContainerName()).Return(testErr)
-	s.client.EXPECT().RemoveImage(gomock.Any(), testImageRef).Return(testErr)
 
-	s.r.NoError(s.botClient.TearDownBot(context.Background(), botConfig.ContainerName(), true))
+	s.r.NoError(s.botClient.TearDownBot(context.Background(), botConfig.ContainerName()))
 }
 
 func (s *BotClientTestSuite) TestStopBot() {

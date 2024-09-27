@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/forta-network/forta-core-go/utils"
 	"github.com/forta-network/forta-node/clients"
 	"github.com/forta-network/forta-node/clients/agentgrpc"
+	"github.com/forta-network/forta-node/clients/bothttp"
 	"github.com/forta-network/forta-node/clients/messaging"
 	"github.com/forta-network/forta-node/config"
 	"github.com/forta-network/forta-node/nodeutils"
@@ -57,10 +59,15 @@ type BotClient interface {
 // Constants
 const (
 	DefaultBufferSize          = 2000
-	RequestTimeout             = 30 * time.Second
-	MaxFindings                = 50
+	RequestTimeout             = 5 * time.Minute
+	MaxFindings                = 1000
 	DefaultInitializeTimeout   = 5 * time.Minute
 	DefaultHealthCheckInterval = time.Second * 30
+)
+
+// Global vars
+var (
+	HealthCheckInterval = DefaultHealthCheckInterval
 )
 
 // botClient receives blocks and transactions, and produces results.
@@ -82,6 +89,7 @@ type botClient struct {
 
 	dialer       agentgrpc.BotDialer
 	clientUnsafe agentgrpc.Client
+	clientV2     bothttp.Client
 
 	initialized     chan struct{}
 	initializedOnce sync.Once
@@ -128,6 +136,7 @@ func NewBotClient(
 	resultChannels botreq.SendOnlyChannels,
 ) *botClient {
 	botCtx, botCtxCancel := context.WithCancel(ctx)
+	healthCheckPortInt, _ := strconv.Atoi(config.DefaultBotHealthCheckPort)
 	return &botClient{
 		ctx:                 botCtx,
 		ctxCancel:           botCtxCancel,
@@ -141,6 +150,7 @@ func NewBotClient(
 		lifecycleMetrics:    lifecycleMetrics,
 		dialer:              botDialer,
 		initialized:         make(chan struct{}),
+		clientV2:            bothttp.NewClient(botCfg.ContainerName(), healthCheckPortInt),
 	}
 }
 
@@ -303,6 +313,12 @@ func (bot *botClient) initialize() {
 		"bot": botConfig.ID,
 	})
 
+	if bot.Config().ProtocolVersion >= 2 {
+		logger.Info("newer protocol version detected - skipping bot initialization")
+		bot.initSuccess(botConfig)
+		return
+	}
+
 	// publish start metric to track bot starts/restarts.
 	bot.lifecycleMetrics.ClientDial(botConfig)
 
@@ -387,10 +403,15 @@ func validateInitializeResponse(response *protocol.InitializeResponse) error {
 // StartProcessing launches the goroutines to concurrently process incoming requests
 // from request channels.
 func (bot *botClient) StartProcessing() {
+	go bot.processHealthChecks()
+
+	if bot.Config().ProtocolVersion >= 2 {
+		return
+	}
+
 	go bot.processTransactions()
 	go bot.processBlocks()
 	go bot.processCombinationAlerts()
-	go bot.processHealthChecks()
 }
 
 func processRequests[R any](
@@ -400,7 +421,11 @@ func processRequests[R any](
 	for {
 		select {
 		case <-ctx.Done():
-			logger.WithError(ctx.Err()).Info("bot context is done")
+			logger.WithError(ctx.Err()).Info("bot context is done - exiting request processing loop")
+			return
+
+		case <-closedCh:
+			logger.Info("bot client is closed - exiting request processing loop")
 			return
 
 		case request := <-reqCh:
@@ -423,7 +448,11 @@ func (bot *botClient) processTransactions() {
 		},
 	)
 
-	<-bot.Initialized()
+	select {
+	case <-bot.Closed():
+		return
+	case <-bot.Initialized():
+	}
 
 	processRequests(bot.ctx, bot.txRequests, bot.Closed(), lg, bot.processTransaction)
 }
@@ -437,35 +466,13 @@ func (bot *botClient) processBlocks() {
 		},
 	)
 
-	<-bot.Initialized()
+	select {
+	case <-bot.Closed():
+		return
+	case <-bot.Initialized():
+	}
 
 	processRequests(bot.ctx, bot.blockRequests, bot.Closed(), lg, bot.processBlock)
-}
-
-func (bot *botClient) processHealthChecks() {
-	lg := log.WithFields(
-		log.Fields{
-			"bot":       bot.Config().ID,
-			"component": "bot-client",
-			"evaluate":  "health-check",
-		},
-	)
-
-	<-bot.Initialized()
-
-	t := time.NewTicker(DefaultHealthCheckInterval)
-
-	for {
-		select {
-		case <-bot.ctx.Done():
-			return
-		case <-t.C:
-			exit := bot.doHealthCheck(bot.ctx, lg)
-			if exit {
-				return
-			}
-		}
-	}
 }
 
 func (bot *botClient) processCombinationAlerts() {
@@ -477,9 +484,44 @@ func (bot *botClient) processCombinationAlerts() {
 		},
 	)
 
-	<-bot.Initialized()
+	select {
+	case <-bot.Closed():
+		return
+	case <-bot.Initialized():
+	}
 
 	processRequests(bot.ctx, bot.combinationRequests, bot.Closed(), lg, bot.processCombinationAlert)
+}
+
+func (bot *botClient) processHealthChecks() {
+	lg := log.WithFields(
+		log.Fields{
+			"bot":       bot.Config().ID,
+			"component": "bot-client",
+			"evaluate":  "health-check",
+		},
+	)
+
+	select {
+	case <-bot.Closed():
+		return
+	case <-bot.Initialized():
+	}
+
+	ticker := time.NewTicker(HealthCheckInterval)
+
+	bot.doHealthCheck(bot.ctx, lg)
+	for {
+		select {
+		case <-bot.ctx.Done():
+			return
+		case <-ticker.C:
+			exit := bot.doHealthCheck(bot.ctx, lg)
+			if exit {
+				return
+			}
+		}
+	}
 }
 
 func (bot *botClient) processTransaction(ctx context.Context, lg *log.Entry, request *botreq.TxRequest) (exit bool) {
@@ -503,7 +545,7 @@ func (bot *botClient) processTransaction(ctx context.Context, lg *log.Entry, req
 		// truncate findings
 		if len(resp.Findings) > MaxFindings {
 			dropped := len(resp.Findings) - MaxFindings
-			droppedMetric := metrics.CreateAgentMetric(botConfig, metrics.MetricFindingsDropped, float64(dropped))
+			droppedMetric := metrics.CreateAgentMetricV1(botConfig, domain.MetricFindingsDropped, float64(dropped))
 			bot.msgClient.PublishProto(
 				messaging.SubjectMetricAgent,
 				&protocol.AgentMetricList{Metrics: []*protocol.AgentMetric{droppedMetric}},
@@ -539,6 +581,8 @@ func (bot *botClient) processTransaction(ctx context.Context, lg *log.Entry, req
 	}
 
 	lg.WithField("duration", time.Since(startTime)).WithError(err).Error("error invoking bot")
+	bot.lifecycleMetrics.BotError("tx.invoke", err, botConfig)
+
 	if bot.errCounter.TooManyErrs(err) {
 		lg.WithField("duration", time.Since(startTime)).Error("too many errors - shutting down bot")
 		_ = bot.Close()
@@ -569,8 +613,8 @@ func (bot *botClient) processBlock(ctx context.Context, lg *log.Entry, request *
 		// truncate findings
 		if len(resp.Findings) > MaxFindings {
 			dropped := len(resp.Findings) - MaxFindings
-			droppedMetric := metrics.CreateAgentMetric(
-				botConfig, metrics.MetricFindingsDropped, float64(dropped),
+			droppedMetric := metrics.CreateAgentMetricV1(
+				botConfig, domain.MetricFindingsDropped, float64(dropped),
 			)
 			bot.msgClient.PublishProto(
 				messaging.SubjectMetricAgent,
@@ -607,6 +651,8 @@ func (bot *botClient) processBlock(ctx context.Context, lg *log.Entry, request *
 	}
 
 	lg.WithField("duration", time.Since(startTime)).WithError(err).Error("error invoking bot")
+	bot.lifecycleMetrics.BotError("block.invoke", err, botConfig)
+
 	if bot.errCounter.TooManyErrs(err) {
 		lg.WithField("duration", time.Since(startTime)).Error("too many errors - shutting down bot")
 		_ = bot.Close()
@@ -636,7 +682,9 @@ func (bot *botClient) processCombinationAlert(ctx context.Context, lg *log.Entry
 	if err != nil {
 		if status.Code(err) != codes.Unimplemented {
 			lg.WithField("duration", time.Since(startTime)).WithError(err).Error("error invoking bot")
+			bot.lifecycleMetrics.BotError("combiner.invoke", err, botConfig)
 		}
+
 		if bot.errCounter.TooManyErrs(err) {
 			lg.WithField("duration", time.Since(startTime)).Error("too many errors - shutting down bot")
 			_ = bot.Close()
@@ -658,7 +706,7 @@ func (bot *botClient) processCombinationAlert(ctx context.Context, lg *log.Entry
 	// truncate findings
 	if len(resp.Findings) > MaxFindings {
 		dropped := len(resp.Findings) - MaxFindings
-		droppedMetric := metrics.CreateAgentMetric(botConfig, metrics.MetricFindingsDropped, float64(dropped))
+		droppedMetric := metrics.CreateAgentMetricV1(botConfig, domain.MetricFindingsDropped, float64(dropped))
 		bot.msgClient.PublishProto(
 			messaging.SubjectMetricAgent, &protocol.AgentMetricList{Metrics: []*protocol.AgentMetric{droppedMetric}},
 		)
@@ -704,7 +752,29 @@ func (bot *botClient) doHealthCheck(ctx context.Context, lg *log.Entry) bool {
 
 	bot.lifecycleMetrics.HealthCheckAttempt(botConfig)
 
-	err := botClient.DoHealthCheck(ctx)
+	var err error
+	if botConfig.ProtocolVersion >= 2 {
+		var botMetrics []bothttp.Metrics
+		botMetrics, err = bot.clientV2.Health(ctx)
+
+		if len(botMetrics) != 0 {
+			agentMetrics := make([]*protocol.AgentMetric, 0, len(botMetrics))
+			for _, botMetric := range botMetrics {
+				for metricName, metricValues := range botMetric.DataPoints {
+					for _, metricValue := range metricValues {
+						agentMetrics = append(agentMetrics, metrics.CreateAgentMetricV2(botConfig, metricName, metricValue, botMetric.ChainID))
+					}
+				}
+			}
+
+			bot.msgClient.PublishProto(
+				messaging.SubjectMetricAgent,
+				&protocol.AgentMetricList{Metrics: agentMetrics},
+			)
+		}
+	} else {
+		err = botClient.DoHealthCheck(ctx)
+	}
 	if err != nil {
 		bot.lifecycleMetrics.HealthCheckError(err, botConfig)
 	} else {
@@ -762,6 +832,10 @@ func calculateResponseTime(startTime *time.Time) (timestamp string, latencyMs ui
 func (bot *botClient) ShouldProcessBlock(blockNumberHex string) bool {
 	botConfig := bot.Config()
 
+	if botConfig.ProtocolVersion >= 2 {
+		return false
+	}
+
 	blockNumber, _ := hexutil.DecodeUint64(blockNumberHex)
 	var isAtLeastStartBlock bool
 	if botConfig.StartBlock != nil {
@@ -794,6 +868,10 @@ func (bot *botClient) ShouldProcessAlert(event *protocol.AlertEvent) bool {
 	}
 
 	botConfig := bot.Config()
+
+	if botConfig.ProtocolVersion >= 2 {
+		return false
+	}
 
 	// handle sharding
 	alertCreatedAt, err := time.Parse(time.RFC3339Nano, event.Alert.CreatedAt)

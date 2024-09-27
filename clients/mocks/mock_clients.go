@@ -10,7 +10,9 @@ import (
 	time "time"
 
 	types "github.com/docker/docker/api/types"
+	events "github.com/docker/docker/api/types/events"
 	domain "github.com/forta-network/forta-core-go/domain"
+	protocol "github.com/forta-network/forta-core-go/protocol"
 	docker "github.com/forta-network/forta-node/clients/docker"
 	config "github.com/forta-network/forta-node/config"
 	gomock "github.com/golang/mock/gomock"
@@ -52,6 +54,21 @@ func (m *MockDockerClient) AttachNetwork(ctx context.Context, containerID, netwo
 func (mr *MockDockerClientMockRecorder) AttachNetwork(ctx, containerID, networkID interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachNetwork", reflect.TypeOf((*MockDockerClient)(nil).AttachNetwork), ctx, containerID, networkID)
+}
+
+// ContainerStats mocks base method.
+func (m *MockDockerClient) ContainerStats(ctx context.Context, containerID string) (*docker.ContainerResources, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerStats", ctx, containerID)
+	ret0, _ := ret[0].(*docker.ContainerResources)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerStats indicates an expected call of ContainerStats.
+func (mr *MockDockerClientMockRecorder) ContainerStats(ctx, containerID interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerStats", reflect.TypeOf((*MockDockerClient)(nil).ContainerStats), ctx, containerID)
 }
 
 // DetachNetwork mocks base method.
@@ -126,6 +143,21 @@ func (mr *MockDockerClientMockRecorder) EnsurePublicNetwork(ctx, name interface{
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsurePublicNetwork", reflect.TypeOf((*MockDockerClient)(nil).EnsurePublicNetwork), ctx, name)
 }
 
+// Events mocks base method.
+func (m *MockDockerClient) Events(ctx context.Context, since time.Time) (<-chan events.Message, <-chan error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Events", ctx, since)
+	ret0, _ := ret[0].(<-chan events.Message)
+	ret1, _ := ret[1].(<-chan error)
+	return ret0, ret1
+}
+
+// Events indicates an expected call of Events.
+func (mr *MockDockerClientMockRecorder) Events(ctx, since interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Events", reflect.TypeOf((*MockDockerClient)(nil).Events), ctx, since)
+}
+
 // GetContainerByID mocks base method.
 func (m *MockDockerClient) GetContainerByID(ctx context.Context, id string) (*types.Container, error) {
 	m.ctrl.T.Helper()
@@ -172,18 +204,18 @@ func (mr *MockDockerClientMockRecorder) GetContainerFromRemoteAddr(ctx, hostPort
 }
 
 // GetContainerLogs mocks base method.
-func (m *MockDockerClient) GetContainerLogs(ctx context.Context, containerID, tail string, truncate int) (string, error) {
+func (m *MockDockerClient) GetContainerLogs(ctx context.Context, containerID, since string, truncate int) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetContainerLogs", ctx, containerID, tail, truncate)
+	ret := m.ctrl.Call(m, "GetContainerLogs", ctx, containerID, since, truncate)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetContainerLogs indicates an expected call of GetContainerLogs.
-func (mr *MockDockerClientMockRecorder) GetContainerLogs(ctx, containerID, tail, truncate interface{}) *gomock.Call {
+func (mr *MockDockerClientMockRecorder) GetContainerLogs(ctx, containerID, since, truncate interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContainerLogs", reflect.TypeOf((*MockDockerClient)(nil).GetContainerLogs), ctx, containerID, tail, truncate)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContainerLogs", reflect.TypeOf((*MockDockerClient)(nil).GetContainerLogs), ctx, containerID, since, truncate)
 }
 
 // GetContainers mocks base method.
@@ -273,6 +305,21 @@ func (m *MockDockerClient) InterruptContainer(ctx context.Context, id string) er
 func (mr *MockDockerClientMockRecorder) InterruptContainer(ctx, id interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InterruptContainer", reflect.TypeOf((*MockDockerClient)(nil).InterruptContainer), ctx, id)
+}
+
+// ListDigestReferences mocks base method.
+func (m *MockDockerClient) ListDigestReferences(ctx context.Context) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListDigestReferences", ctx)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListDigestReferences indicates an expected call of ListDigestReferences.
+func (mr *MockDockerClientMockRecorder) ListDigestReferences(ctx interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListDigestReferences", reflect.TypeOf((*MockDockerClient)(nil).ListDigestReferences), ctx)
 }
 
 // Nuke mocks base method.
@@ -369,6 +416,20 @@ func (m *MockDockerClient) SetImagePullCooldown(threshold int, cooldownDuration 
 func (mr *MockDockerClientMockRecorder) SetImagePullCooldown(threshold, cooldownDuration interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetImagePullCooldown", reflect.TypeOf((*MockDockerClient)(nil).SetImagePullCooldown), threshold, cooldownDuration)
+}
+
+// ShutdownContainer mocks base method.
+func (m *MockDockerClient) ShutdownContainer(ctx context.Context, id string, timeout *time.Duration) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ShutdownContainer", ctx, id, timeout)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ShutdownContainer indicates an expected call of ShutdownContainer.
+func (mr *MockDockerClientMockRecorder) ShutdownContainer(ctx, id, timeout interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ShutdownContainer", reflect.TypeOf((*MockDockerClient)(nil).ShutdownContainer), ctx, id, timeout)
 }
 
 // StartContainer mocks base method.
@@ -553,12 +614,11 @@ func (m *MockAlertAPIClient) EXPECT() *MockAlertAPIClientMockRecorder {
 }
 
 // PostBatch mocks base method.
-func (m *MockAlertAPIClient) PostBatch(batch *domain.AlertBatchRequest, token string) (*domain.AlertBatchResponse, error) {
+func (m *MockAlertAPIClient) PostBatch(batch *domain.AlertBatchRequest, token string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PostBatch", batch, token)
-	ret0, _ := ret[0].(*domain.AlertBatchResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret0, _ := ret[0].(error)
+	return ret0
 }
 
 // PostBatch indicates an expected call of PostBatch.
@@ -647,4 +707,42 @@ func (m *MockIPAuthenticator) FindContainerNameFromRemoteAddr(ctx context.Contex
 func (mr *MockIPAuthenticatorMockRecorder) FindContainerNameFromRemoteAddr(ctx, hostPort interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindContainerNameFromRemoteAddr", reflect.TypeOf((*MockIPAuthenticator)(nil).FindContainerNameFromRemoteAddr), ctx, hostPort)
+}
+
+// MockBlocksDataClient is a mock of BlocksDataClient interface.
+type MockBlocksDataClient struct {
+	ctrl     *gomock.Controller
+	recorder *MockBlocksDataClientMockRecorder
+}
+
+// MockBlocksDataClientMockRecorder is the mock recorder for MockBlocksDataClient.
+type MockBlocksDataClientMockRecorder struct {
+	mock *MockBlocksDataClient
+}
+
+// NewMockBlocksDataClient creates a new mock instance.
+func NewMockBlocksDataClient(ctrl *gomock.Controller) *MockBlocksDataClient {
+	mock := &MockBlocksDataClient{ctrl: ctrl}
+	mock.recorder = &MockBlocksDataClientMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockBlocksDataClient) EXPECT() *MockBlocksDataClientMockRecorder {
+	return m.recorder
+}
+
+// GetBlocksData mocks base method.
+func (m *MockBlocksDataClient) GetBlocksData(bucket int64) (*protocol.BlocksData, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBlocksData", bucket)
+	ret0, _ := ret[0].(*protocol.BlocksData)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetBlocksData indicates an expected call of GetBlocksData.
+func (mr *MockBlocksDataClientMockRecorder) GetBlocksData(bucket interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBlocksData", reflect.TypeOf((*MockBlocksDataClient)(nil).GetBlocksData), bucket)
 }

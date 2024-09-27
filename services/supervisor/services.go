@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
-	"github.com/forta-network/forta-core-go/clients/agentlogs"
 	"github.com/forta-network/forta-core-go/clients/health"
 	"github.com/forta-network/forta-core-go/manifest"
 	"github.com/forta-network/forta-core-go/protocol"
@@ -78,9 +77,7 @@ type SupervisorService struct {
 
 	healthClient health.HealthClient
 
-	sendAgentLogs func(agents agentlogs.Agents, authToken string) error
-	prevAgentLogs agentlogs.Agents
-	inspectionCh  chan *protocol.InspectionResults
+	inspectionCh chan *protocol.InspectionResults
 }
 
 type SupervisorServiceConfig struct {
@@ -154,6 +151,9 @@ func (sup *SupervisorService) start() error {
 		return fmt.Errorf("failed to get the supervisor container: %v", err)
 	}
 	commonNodeImage := supervisorContainer.Image
+
+	// start of service network and container launch
+	startTime := time.Now()
 
 	nodeNetworkID, err := sup.client.EnsurePublicNetwork(sup.ctx, config.DockerNetworkName)
 	if err != nil {
@@ -299,6 +299,9 @@ func (sup *SupervisorService) start() error {
 			Ports: map[string]string{
 				"": config.DefaultHealthPort, // random host port
 			},
+			Files: map[string][]byte{
+				"passphrase": []byte(sup.config.Passphrase),
+			},
 			DialHost:       true,
 			NetworkID:      nodeNetworkID,
 			LinkNetworkIDs: []string{natsNetworkID},
@@ -387,6 +390,12 @@ func (sup *SupervisorService) start() error {
 		<-sup.inspectionCh
 		log.Info("inspection to completed")
 	}
+
+	go func() {
+		// wait for the publisher so it can catch the metrics
+		time.Sleep(time.Minute)
+		go containers.ListenToDockerEvents(sup.ctx, sup.globalClient, sup.msgClient, startTime)
+	}()
 
 	sup.scannerContainer, err = sup.client.StartContainer(
 		sup.ctx, docker.ContainerConfig{
@@ -777,7 +786,6 @@ func NewSupervisorService(ctx context.Context, cfg SupervisorServiceConfig) (*Su
 		botLifecycleConfig: cfg.BotLifecycleConfig,
 		config:             cfg,
 		healthClient:       health.NewClient(),
-		sendAgentLogs:      agentlogs.NewClient(cfg.Config.AgentLogsConfig.URL).SendLogs,
 		inspectionCh:       make(chan *protocol.InspectionResults),
 	}
 	sup.autoUpdatesDisabled.Set(strconv.FormatBool(cfg.Config.AutoUpdate.Disable))

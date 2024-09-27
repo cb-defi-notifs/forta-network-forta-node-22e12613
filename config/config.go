@@ -25,7 +25,7 @@ type ScannerConfig struct {
 	DisableAutostart     bool          `yaml:"disableAutostart" json:"disableAutostart"`
 	BlockRateLimit       int           `yaml:"blockRateLimit" json:"blockRateLimit" default:"200"`
 	BlockMaxAgeSeconds   int64         `yaml:"blockMaxAgeSeconds" json:"blockMaxAgeSeconds" default:"600"`
-	RetryIntervalSeconds int64         `yaml:"retryIntervalSeconds" json:"retryIntervalSeconds" default:"8"`
+	RetryIntervalSeconds int64         `yaml:"retryIntervalSeconds" json:"retryIntervalSeconds"`
 	AlertAPIURL          string        `yaml:"apiUrl" json:"apiUrl" default:"https://api.forta.network/graphql" validate:"url"`
 }
 
@@ -42,6 +42,11 @@ type RateLimitConfig struct {
 type JsonRpcProxyConfig struct {
 	JsonRpc         JsonRpcConfig    `yaml:"jsonRpc" json:"jsonRpc"`
 	RateLimitConfig *RateLimitConfig `yaml:"rateLimit" json:"rateLimit"`
+}
+
+type JsonRpcCacheConfig struct {
+	DispatcherURL            string `yaml:"dispatcherUrl" json:"dispatcherUrl" default:"https://dispatcher.forta.network/batch" validate:"omitempty,url"`
+	CacheExpirePeriodSeconds int    `yaml:"cacheExpirePeriodSeconds" json:"cacheExpirePeriodSeconds" default:"300"`
 }
 
 type LogConfig struct {
@@ -200,9 +205,13 @@ type CombinerConfig struct {
 }
 
 type AdvancedConfig struct {
-	SafeOffset       bool   `yaml:"safeOffset" json:"safeOffset"`
 	IPFSExperiment   bool   `yaml:"ipfsExperiment" json:"ipfsExperiment"`
 	MulticallAddress string `yaml:"multicallAddress" json:"multicallAddress"`
+	TokenExchangeURL string `yaml:"tokenExchangeUrl" json:"tokenExchangeUrl" default:"https://alerts.forta.network/exchange-token"`
+}
+
+type PrometheusConfig struct {
+	Port int `yaml:"port" json:"port" default:"9107"`
 }
 
 type Config struct {
@@ -223,6 +232,7 @@ type Config struct {
 	Registry         RegistryConfig       `yaml:"registry" json:"registry"`
 	Publish          PublisherConfig      `yaml:"publish" json:"publish"`
 	JsonRpcProxy     JsonRpcProxyConfig   `yaml:"jsonRpcProxy" json:"jsonRpcProxy"`
+	JsonRpcCache     JsonRpcCacheConfig   `yaml:"jsonRpcCache" json:"jsonRpcCache"`
 	PublicAPIProxy   PublicAPIProxyConfig `yaml:"publicApiProxy" json:"publicApiProxy"`
 	Log              LogConfig            `yaml:"log" json:"log"`
 	ResourcesConfig  ResourcesConfig      `yaml:"resources" json:"resources"`
@@ -234,6 +244,7 @@ type Config struct {
 	InspectionConfig InspectionConfig     `yaml:"inspection" json:"inspection"`
 	StorageConfig    StorageConfig        `yaml:"storage" json:"storage"`
 	CombinerConfig   CombinerConfig       `yaml:"combiner" json:"combiner"`
+	PrometheusConfig PrometheusConfig     `yaml:"prometheus" json:"prometheus"`
 	AdvancedConfig   AdvancedConfig       `yaml:"advanced" json:"advanced"`
 }
 
@@ -272,6 +283,7 @@ func (cfg *Config) BotsToWait() (waitBots int) {
 		return
 	}
 	waitBots += len(cfg.LocalModeConfig.BotImages)
+	waitBots += len(cfg.LocalModeConfig.BotIDs)
 	waitBots += len(cfg.LocalModeConfig.Standalone.BotContainers)
 	// sharded bots spawn on multiple containers, so total "wait bot" count is shards * target
 	for _, bot := range cfg.LocalModeConfig.ShardedBots {

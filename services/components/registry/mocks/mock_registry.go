@@ -35,6 +35,21 @@ func (m *MockBotRegistry) EXPECT() *MockBotRegistryMockRecorder {
 	return m.recorder
 }
 
+// GetConfigByID mocks base method.
+func (m *MockBotRegistry) GetConfigByID(agentID string) (*config.AgentConfig, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetConfigByID", agentID)
+	ret0, _ := ret[0].(*config.AgentConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetConfigByID indicates an expected call of GetConfigByID.
+func (mr *MockBotRegistryMockRecorder) GetConfigByID(agentID interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfigByID", reflect.TypeOf((*MockBotRegistry)(nil).GetConfigByID), agentID)
+}
+
 // Health mocks base method.
 func (m *MockBotRegistry) Health() health.Reports {
 	m.ctrl.T.Helper()
@@ -62,6 +77,21 @@ func (m *MockBotRegistry) LoadAssignedBots() ([]config.AgentConfig, error) {
 func (mr *MockBotRegistryMockRecorder) LoadAssignedBots() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadAssignedBots", reflect.TypeOf((*MockBotRegistry)(nil).LoadAssignedBots))
+}
+
+// LoadHeartbeatBot mocks base method.
+func (m *MockBotRegistry) LoadHeartbeatBot() (*config.AgentConfig, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoadHeartbeatBot")
+	ret0, _ := ret[0].(*config.AgentConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LoadHeartbeatBot indicates an expected call of LoadHeartbeatBot.
+func (mr *MockBotRegistryMockRecorder) LoadHeartbeatBot() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadHeartbeatBot", reflect.TypeOf((*MockBotRegistry)(nil).LoadHeartbeatBot))
 }
 
 // Name mocks base method.

@@ -9,19 +9,20 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
-
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/forta-network/forta-core-go/utils/workers"
 	"github.com/forta-network/forta-node/clients/cooldown"
 	"github.com/forta-network/forta-node/config"
+	"github.com/goccy/go-json"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -599,12 +600,20 @@ func (d *dockerClient) TerminateContainer(ctx context.Context, id string) error 
 	return d.stopContainer(ctx, id, "SIGTERM")
 }
 
+// ShutdownContainer stops a container by sending a termination signal and waits until either container exits or context cancels.
+func (d *dockerClient) ShutdownContainer(ctx context.Context, id string, timeout *time.Duration) error {
+	return d.cli.ContainerStop(ctx, id, timeout)
+}
+
 // TerminateContainer stops a container by sending an termination signal.
 func (d *dockerClient) stopContainer(ctx context.Context, containerID, signal string) error {
-	log.WithFields(log.Fields{
-		"id":     containerID,
-		"signal": signal,
-	}).Infof("stopping container")
+	log.WithFields(
+		log.Fields{
+			"id":     containerID,
+			"signal": signal,
+		},
+	).Infof("stopping container")
+
 	err := d.cli.ContainerKill(ctx, containerID, signal)
 	if err == nil {
 		return nil
@@ -778,13 +787,30 @@ func (d *dockerClient) EnsureLocalImages(ctx context.Context, timeoutPerPull tim
 	return
 }
 
+// ListDigestReferences lists all digest references of all images.
+func (d *dockerClient) ListDigestReferences(ctx context.Context) (imgs []string, err error) {
+	imgSummaries, err := d.cli.ImageList(ctx, types.ImageListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list locally available images: %v", err)
+	}
+	for _, imgSummary := range imgSummaries {
+		imgs = append(imgs, imgSummary.RepoDigests...)
+	}
+	return
+}
+
+const (
+	defaultAgentLogAvgMaxCharsPerLine = 200
+)
+
 // GetContainerLogs gets the container logs.
-func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID, tail string, truncate int) (string, error) {
+func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID, since string, tail int) (string, error) {
 	r, err := d.cli.ContainerLogs(ctx, containerID, types.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Timestamps: true,
-		Tail:       tail,
+		Since:      since,
+		Tail:       strconv.Itoa(tail),
 	})
 	if err != nil {
 		return "", err
@@ -793,22 +819,21 @@ func (d *dockerClient) GetContainerLogs(ctx context.Context, containerID, tail s
 	if err != nil {
 		return "", err
 	}
-	if truncate >= 0 && len(b) > truncate {
-		b = b[:truncate]
+
+	// limit the log size
+	if tail >= 0 && len(b) > defaultAgentLogAvgMaxCharsPerLine*tail {
+		b = b[:defaultAgentLogAvgMaxCharsPerLine*tail]
 	}
-	// remove strange 8-byte prefix in each line
-	lines := strings.Split(string(b), "\n")
-	for i, line := range lines {
-		if len(line) == 0 {
-			continue
+
+	// remove 8-byte prefix in each line
+	// https://github.com/moby/moby/issues/8223
+	bs := bytes.Split(b, []byte("\n"))
+	for i, v := range bs {
+		if len(v) > 8 {
+			bs[i] = v[8:]
 		}
-		prefixEnd := strings.Index(line, "2") // timestamp beginning
-		if prefixEnd < 0 || prefixEnd > len(line) {
-			continue
-		}
-		lines[i] = line[prefixEnd:]
 	}
-	return strings.Join(lines, "\n"), nil
+	return string(bytes.Join(bs, []byte("\n"))), nil
 }
 
 func (d *dockerClient) labelFilter() filters.Args {
@@ -821,6 +846,13 @@ func makeLabelFilter(labels []dockerLabel) filters.Args {
 		filter.Add("label", fmt.Sprintf("%s=%s", label.Name, label.Value))
 	}
 	return filter
+}
+
+// Events returns channels that send the Docker events and listening/decoding errors.
+func (d *dockerClient) Events(ctx context.Context, since time.Time) (<-chan events.Message, <-chan error) {
+	return d.cli.Events(ctx, types.EventsOptions{
+		Since: since.Format(time.RFC3339),
+	})
 }
 
 func (d *dockerClient) GetContainerFromRemoteAddr(ctx context.Context, hostPort string) (*types.Container, error) {
@@ -849,6 +881,43 @@ func (d *dockerClient) GetContainerFromRemoteAddr(ctx context.Context, hostPort 
 	}
 
 	return agentContainer, nil
+}
+
+func (d *dockerClient) ContainerStats(ctx context.Context, id string) (*ContainerResources, error) {
+	stats, err := d.cli.ContainerStatsOneShot(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var containerResources types.StatsJSON
+
+	err = json.NewDecoder(stats.Body).Decode(&containerResources)
+	if err != nil {
+		return nil, err
+	}
+
+	resources := ContainerResources{
+		CPUStats: CPUStats{
+			CPUUsage: CPUUsage{
+				TotalUsage: containerResources.CPUStats.CPUUsage.TotalUsage,
+			},
+			SystemUsage: containerResources.CPUStats.SystemUsage,
+			OnlineCPUs:  containerResources.CPUStats.OnlineCPUs,
+		},
+		MemoryStats: MemoryStats{
+			Usage: containerResources.MemoryStats.Usage,
+		},
+		NetworkStats: make(map[string]NetworkStats),
+	}
+
+	for name, network := range containerResources.Networks {
+		resources.NetworkStats[name] = NetworkStats{
+			RxBytes: network.RxBytes,
+			TxBytes: network.TxBytes,
+		}
+	}
+
+	return &resources, nil
 }
 
 func initLabels(name string) []dockerLabel {

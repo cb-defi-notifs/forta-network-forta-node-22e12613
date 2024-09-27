@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-const defaultAgentResponseMaxByteCount = 250000 // 250K
+const defaultAgentResponseMaxByteCount = 10000000 // 10M
 
 // Method is gRPC method type.
 type Method string
@@ -113,7 +113,7 @@ func evaluateHealthCheckResult(invokeErr error, resp *protocol.HealthCheckRespon
 	var err error
 
 	// catch invocation errors
-	if invokeErr != nil && status.Code(err) != codes.Unimplemented {
+	if invokeErr != nil && status.Code(invokeErr) != codes.Unimplemented {
 		err = multierror.Append(err, invokeErr)
 	}
 

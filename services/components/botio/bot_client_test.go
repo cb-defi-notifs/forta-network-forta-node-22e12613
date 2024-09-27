@@ -96,17 +96,19 @@ func (s *BotClientSuite) TestStartProcessStop() {
 	s.lifecycleMetrics.EXPECT().ActionSubscribe(combinerSubscriptions)
 
 	// test health checks
-	s.lifecycleMetrics.EXPECT().HealthCheckAttempt(s.botClient.configUnsafe).AnyTimes()
-	s.lifecycleMetrics.EXPECT().HealthCheckSuccess(s.botClient.configUnsafe).AnyTimes()
-
-	s.botGrpc.EXPECT().Invoke(
-		gomock.Any(), agentgrpc.MethodHealthCheck,
-		gomock.AssignableToTypeOf(&protocol.HealthCheckRequest{}), gomock.AssignableToTypeOf(&protocol.HealthCheckResponse{}),
-	).Return(nil).AnyTimes()
+	healthCheckChan := make(chan interface{})
+	HealthCheckInterval = time.Second
+	s.botGrpc.EXPECT().DoHealthCheck(gomock.Any()).Return(nil).MinTimes(1)
+	s.lifecycleMetrics.EXPECT().HealthCheckAttempt(s.botClient.configUnsafe).MinTimes(1)
+	s.lifecycleMetrics.EXPECT().HealthCheckSuccess(s.botClient.configUnsafe).Do(func(_ interface{}) {
+		close(healthCheckChan)
+	}).MinTimes(1)
 
 	s.msgClient.EXPECT().Publish(messaging.SubjectAgentsAlertSubscribe, combinerSubscriptions)
 	s.botClient.StartProcessing()
 	s.botClient.Initialize()
+
+	<-healthCheckChan
 
 	<-s.botClient.Initialized()
 
@@ -170,6 +172,18 @@ func (s *BotClientSuite) TestStartProcessStop() {
 	alertResult := <-s.resultChannels.CombinationAlert
 	combinerResp.Timestamp = alertResult.Response.Timestamp // bypass - hard to match
 	combinerResp.LatencyMs = alertResult.Response.LatencyMs // bypass - hard to match
+
+	// test error while handling
+	invokeErr := fmt.Errorf("failed to invoke")
+	s.botGrpc.EXPECT().Invoke(
+		gomock.Any(), agentgrpc.MethodEvaluateAlert,
+		gomock.AssignableToTypeOf(&protocol.EvaluateAlertRequest{}), gomock.AssignableToTypeOf(&protocol.EvaluateAlertResponse{}),
+	).Return(invokeErr)
+	s.lifecycleMetrics.EXPECT().BotError("combiner.invoke", invokeErr, s.botClient.configUnsafe)
+	s.botClient.CombinationRequestCh() <- &botreq.CombinationRequest{
+		Original: combinerReq,
+	}
+	<-s.resultChannels.CombinationAlert
 
 	s.r.Equal(txReq, txResult.Request)
 	s.r.Equal(txResp, txResult.Response)
@@ -254,8 +268,7 @@ func (s *BotClientSuite) TestInitialize_ValidationError() {
 
 func (s *BotClientSuite) TestHealthCheck() {
 	s.botGrpc.EXPECT().Initialize(gomock.Any(), gomock.Any()).Return(
-		&protocol.InitializeResponse{
-		}, nil,
+		&protocol.InitializeResponse{}, nil,
 	).AnyTimes()
 
 	s.lifecycleMetrics.EXPECT().ClientDial(s.botClient.configUnsafe)
@@ -284,8 +297,7 @@ func (s *BotClientSuite) TestHealthCheck() {
 
 func (s *BotClientSuite) TestHealthCheck_WithError() {
 	s.botGrpc.EXPECT().Initialize(gomock.Any(), gomock.Any()).Return(
-		&protocol.InitializeResponse{
-		}, nil,
+		&protocol.InitializeResponse{}, nil,
 	).AnyTimes()
 
 	s.lifecycleMetrics.EXPECT().ClientDial(s.botClient.configUnsafe)
@@ -304,7 +316,6 @@ func (s *BotClientSuite) TestHealthCheck_WithError() {
 	err := fmt.Errorf("health check error")
 	// Use Do() to modify the request parameter
 	s.botGrpc.EXPECT().DoHealthCheck(ctx).Return(err)
-
 
 	// Mock HealthCheckError() call
 	s.lifecycleMetrics.EXPECT().HealthCheckError(gomock.Any(), gomock.Any())

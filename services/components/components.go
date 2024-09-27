@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/forta-network/forta-core-go/clients/agentlogs"
 	"github.com/forta-network/forta-core-go/utils"
 	"github.com/forta-network/forta-node/clients"
 	"github.com/forta-network/forta-node/clients/agentgrpc"
@@ -72,16 +74,22 @@ type BotLifecycleConfig struct {
 	ScannerAddress common.Address
 	MessageClient  clients.MessageClient
 	BotRegistry    registry.BotRegistry
+	Key            *keystore.Key
 }
 
 // BotLifecycle contains the bot lifecycle components.
 type BotLifecycle struct {
-	BotManager lifecycle.BotLifecycleManager
-	BotClient  containers.BotClient
+	BotManager   lifecycle.BotLifecycleManager
+	BotClient    containers.BotClient
+	ImageCleanup containers.ImageCleanup
+	BotLogger    lifecycle.BotLogger
 }
 
 // GetBotLifecycleComponents returns the bot lifecycle management components.
-func GetBotLifecycleComponents(ctx context.Context, botLifeConfig BotLifecycleConfig) (BotLifecycle, error) {
+func GetBotLifecycleComponents(
+	ctx context.Context,
+	botLifeConfig BotLifecycleConfig,
+) (BotLifecycle, error) {
 	cfg := botLifeConfig.Config
 	// bot image client is helpful for loading local mode agents from a restricted container registry
 	var (
@@ -107,8 +115,8 @@ func GetBotLifecycleComponents(ctx context.Context, botLifeConfig BotLifecycleCo
 	}
 
 	botClient := containers.NewBotClient(
-		botLifeConfig.Config.Log, botLifeConfig.Config.ResourcesConfig,
-		dockerClient, botImageClient,
+		cfg.Log, cfg.ResourcesConfig, cfg.AdvancedConfig.TokenExchangeURL,
+		dockerClient, botImageClient, botLifeConfig.MessageClient,
 	)
 	lifecycleMetrics := metrics.NewLifecycleClient(botLifeConfig.MessageClient)
 	lifecycleMediator := mediator.New(botLifeConfig.MessageClient, lifecycleMetrics)
@@ -118,9 +126,19 @@ func GetBotLifecycleComponents(ctx context.Context, botLifeConfig BotLifecycleCo
 		botLifeConfig.BotRegistry, botClient, lifecycleMediator,
 		lifecycleMetrics, botMonitor,
 	)
+	imageCleanup := containers.NewImageCleanup(dockerClient, botLifeConfig.BotRegistry)
+	botLogger := lifecycle.NewBotLogger(
+		botClient,
+		dockerClient,
+		botLifeConfig.BotRegistry,
+		botLifeConfig.Key,
+		agentlogs.NewClient(botLifeConfig.Config.AgentLogsConfig.URL).SendLogs,
+	)
 
 	return BotLifecycle{
-		BotManager: botManager,
-		BotClient:  botClient,
+		BotManager:   botManager,
+		BotClient:    botClient,
+		ImageCleanup: imageCleanup,
+		BotLogger:    botLogger,
 	}, nil
 }

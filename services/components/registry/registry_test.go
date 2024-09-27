@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -20,6 +21,7 @@ func TestLoadAssignedBots(t *testing.T) {
 	botReg := &botRegistry{
 		scannerAddress: common.HexToAddress(utils.ZeroAddress),
 		registryStore:  regStore,
+		mu:             &sync.RWMutex{},
 	}
 
 	cfgs := []config.AgentConfig{{}}
@@ -40,4 +42,21 @@ func TestLoadAssignedBots(t *testing.T) {
 	retCfgs, err = botReg.LoadAssignedBots()
 	r.Error(err)
 	r.Nil(retCfgs)
+}
+
+func TestBotRegistry_LoadHeartbeatBot(t *testing.T) {
+	r := require.New(t)
+
+	ctrl := gomock.NewController(t)
+	regStore := mock_store.NewMockRegistryStore(ctrl)
+	botReg := &botRegistry{
+		scannerAddress: common.HexToAddress(utils.ZeroAddress),
+		registryStore:  regStore,
+	}
+	cfg := &config.AgentConfig{ID: config.HeartbeatBotID}
+	regStore.EXPECT().FindAgentGlobally(config.HeartbeatBotID).Return(cfg, nil)
+
+	res, err := botReg.LoadHeartbeatBot()
+	r.NoError(err)
+	r.Equal(config.HeartbeatBotID, res.ID)
 }

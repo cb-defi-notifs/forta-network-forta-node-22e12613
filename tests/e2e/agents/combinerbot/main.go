@@ -96,7 +96,6 @@ func (as *agentServer) EvaluateAlert(ctx context.Context, request *protocol.Eval
 			AlertId:       combinerbotalertid.CombinationAlertID,
 			Name:          "Combination Alert",
 			Description:   request.Event.Alert.Hash,
-			EverestId:     "",
 			Private:       false,
 			Addresses:     nil,
 			Indicators:    nil,
@@ -115,5 +114,5 @@ func queryPublicAPI(ctx context.Context, bot string) ([]*protocol.AlertEvent, er
 	)
 	graphqlClient := graphql.NewClient(publicAPIAddr)
 
-	return graphqlClient.GetAlerts(ctx, &graphql.AlertsInput{Bots: []string{bot}}, nil)
+	return graphqlClient.GetAlertsBatch(ctx, []*graphql.AlertsInput{{Bots: []string{bot}}}, nil)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/forta-network/forta-core-go/protocol"
@@ -64,6 +65,14 @@ type LifecycleTestSuite struct {
 	suite.Suite
 }
 
+func (s *LifecycleTestSuite) MockNotTimeForHeartbeatBotLoad() {
+	s.botManager.lastHeartbeatLoad = time.Now().UTC().Add(-10 * time.Minute)
+}
+
+func (s *LifecycleTestSuite) MockTimeForHeartbeatBotLoad() {
+	s.botManager.lastHeartbeatLoad = time.Time{}
+}
+
 func TestLifecycleTestSuite(t *testing.T) {
 	suite.Run(t, &LifecycleTestSuite{})
 }
@@ -82,6 +91,11 @@ func (s *LifecycleTestSuite) SetupTest() {
 	s.resultChannels = botreq.MakeResultChannels()
 	s.botMonitor = mock_lifecycle.NewMockBotMonitor(ctrl)
 
+	// expecting any amount of health calls as we do not focus on testing it in this suite
+	s.lifecycleMetrics.EXPECT().HealthCheckAttempt(gomock.Any()).AnyTimes()
+	s.botGrpc.EXPECT().DoHealthCheck(gomock.Any()).AnyTimes()
+	s.lifecycleMetrics.EXPECT().HealthCheckSuccess(gomock.Any()).AnyTimes()
+
 	botClientFactory := botio.NewBotClientFactory(s.resultChannels.SendOnly(), s.msgClient, s.lifecycleMetrics, s.dialer)
 	s.botPool = NewBotPool(context.Background(), s.lifecycleMetrics, botClientFactory, 0)
 	s.botPool.waitInit = true // hack to make testing synchronous
@@ -91,6 +105,7 @@ func (s *LifecycleTestSuite) SetupTest() {
 func (s *LifecycleTestSuite) TestDownloadTimeout() {
 	s.T().Log("should redownload a bot if downloading times out")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -135,6 +150,7 @@ func (s *LifecycleTestSuite) TestDownloadTimeout() {
 func (s *LifecycleTestSuite) TestLaunchFailure() {
 	s.T().Log("should relaunch a bot if launching fails")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -180,6 +196,7 @@ func (s *LifecycleTestSuite) TestLaunchFailure() {
 func (s *LifecycleTestSuite) TestDialFailure() {
 	s.T().Log("should not reload or redial a bot if dialing finally fails")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -209,6 +226,7 @@ func (s *LifecycleTestSuite) TestDialFailure() {
 func (s *LifecycleTestSuite) TestInitializeFailure() {
 	s.T().Log("should reconnect to a bot if initialization finally fails")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -254,6 +272,7 @@ func (s *LifecycleTestSuite) TestInitializeFailure() {
 func (s *LifecycleTestSuite) TestExitedRestarted() {
 	s.T().Log("should restart and reconnect to exited bots")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -318,6 +337,7 @@ func (s *LifecycleTestSuite) TestExitedRestarted() {
 func (s *LifecycleTestSuite) TestInactiveRestarted() {
 	s.T().Log("should restart and reconnect to the inactive and exited bots")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -378,6 +398,7 @@ func (s *LifecycleTestSuite) TestInactiveRestarted() {
 func (s *LifecycleTestSuite) TestUnassigned() {
 	s.T().Log("should tear down unassigned bots")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
@@ -405,7 +426,7 @@ func (s *LifecycleTestSuite) TestUnassigned() {
 
 	// and should shortly be torn down
 	s.lifecycleMetrics.EXPECT().StatusStopping(assigned[0])
-	s.botContainers.EXPECT().TearDownBot(gomock.Any(), assigned[0].ContainerName(), true).Return(nil)
+	s.botContainers.EXPECT().TearDownBot(gomock.Any(), assigned[0].ContainerName()).Return(nil)
 	s.lifecycleMetrics.EXPECT().StatusRunning().Times(1)
 	s.lifecycleMetrics.EXPECT().ClientClose(assigned[0])
 	s.botGrpc.EXPECT().Close().AnyTimes()
@@ -420,9 +441,43 @@ func (s *LifecycleTestSuite) TestUnassigned() {
 	<-createdBotClient.Closed()
 }
 
+func (s *LifecycleTestSuite) TestHearbeatBotLoads() {
+	s.T().Log("should load heartbeat bot")
+	s.MockTimeForHeartbeatBotLoad()
+
+	botsToRun := []config.AgentConfig{
+		*heartbeatBot,
+	}
+
+	// no assigned bots, but the heartbeat bot still should load
+	s.botRegistry.EXPECT().LoadAssignedBots().Return(nil, nil).Times(1)
+	s.botRegistry.EXPECT().LoadHeartbeatBot().Return(heartbeatBot, nil).Times(1)
+
+	// no assigned bots (assigend is still 0)
+	s.lifecycleMetrics.EXPECT().SystemStatus("load.assigned.bots", "0").Times(1)
+
+	s.botContainers.EXPECT().EnsureBotImages(gomock.Any(), botsToRun).
+		Return([]error{nil}).Times(1)
+	s.botContainers.EXPECT().LaunchBot(gomock.Any(), botsToRun[0]).Return(nil).Times(1)
+	s.lifecycleMetrics.EXPECT().StatusRunning(botsToRun[0]).Times(1) // bot is running
+
+	s.lifecycleMetrics.EXPECT().ClientDial(botsToRun[0]).Times(1)
+	s.lifecycleMetrics.EXPECT().StatusAttached(botsToRun[0]).Times(1)
+	s.lifecycleMetrics.EXPECT().StatusInitialized(botsToRun[0]).Times(1)
+	s.dialer.EXPECT().DialBot(botsToRun[0]).Return(s.botGrpc, nil).Times(1)
+	s.botGrpc.EXPECT().Initialize(gomock.Any(), gomock.Any()).Return(&protocol.InitializeResponse{}, nil).
+		Times(1)
+
+	s.botMonitor.EXPECT().MonitorBots(GetBotIDs(botsToRun)).Times(1)
+
+	// when the bot manager manages the assigned bots over time
+	s.r.NoError(s.botManager.ManageBots(context.Background()))
+}
+
 func (s *LifecycleTestSuite) TestConfigUpdated() {
 	s.T().Log("should update bot config without tearing down")
 
+	s.MockNotTimeForHeartbeatBotLoad()
 	assigned := []config.AgentConfig{
 		{
 			ID:    testBotID1,
